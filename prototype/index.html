@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>节点搜打撤 · P1 原型</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand">节点搜打撤 <span class="ver">P1</span></div>
+    <div id="phaseInfo" class="phase-info"></div>
+    <div id="hud" class="hud"></div>
+  </header>
+
+  <main id="stage">
+    <div class="map-wrap">
+      <canvas id="mapCanvas" width="900" height="640"></canvas>
+    </div>
+    <aside id="side" class="side"></aside>
+  </main>
+
+  <footer id="actionbar" class="actionbar"></footer>
+
+  <div id="overlay" class="overlay hidden">
+    <div class="overlay-card">
+      <div id="overlayInner"></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="js/data.js"></script>
+<script src="js/units.js"></script>
+<script src="js/map.js"></script>
+<script src="js/battle.js"></script>
+<script src="js/render.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
