@@ -1,8 +1,8 @@
 'use strict';
 
 /* ============================================================
-   节点搜打撤 · 数据表
-   数值基准见 GAME_DESIGN.md v0.3
+   掠境 REALMREAVE · 数据表
+   数值基准见 GAME_DESIGN.md v0.8
    ============================================================ */
 
 const QUALITIES = [
@@ -53,6 +53,29 @@ function counterMod(atkCls, defCls) {
   return 1;
 }
 
+/* ---------------- 装备职业契合 ---------------- */
+
+// 近战组：重装 / 近战 / 骑兵；远程组：远程 / 法术
+const APTI_GROUP = {
+  '重装': 'melee', '近战': 'melee', '骑兵': 'melee',
+  '远程': 'ranged', '法术': 'ranged'
+};
+const APTI_PERFECT = 1;
+const APTI_PARTIAL = 0.6;
+
+/** 装备对该职业的契合度：perfect / partial / none */
+function aptitudeOf(cls, eq) {
+  if (!eq || !eq.cls) return 'perfect';      // 护甲 / 饰品 / 无职业武器
+  if (eq.cls === cls) return 'perfect';
+  if (APTI_GROUP[eq.cls] && APTI_GROUP[eq.cls] === APTI_GROUP[cls]) return 'partial';
+  return 'none';
+}
+
+function aptitudeMod(cls, eq) {
+  const a = aptitudeOf(cls, eq);
+  return a === 'perfect' ? APTI_PERFECT : a === 'partial' ? APTI_PARTIAL : 0;
+}
+
 /* ---------------- 环境与材料 ---------------- */
 
 const ENVS = ['森林', '冰原', '平原', '沙漠', '火山'];
@@ -71,6 +94,14 @@ const ENV_COLOR = {
   '平原': '#6b7a44',
   '沙漠': '#9a7c3f',
   '火山': '#7a3a2c'
+};
+
+const ENV_TRAIT = {
+  '森林': '外圈密集 · 岔路多',
+  '冰原': '节点稀疏 · 核心怪多',
+  '平原': '场地开阔 · 物资均衡',
+  '沙漠': '中层厚实 · 外圈单薄',
+  '火山': '核心庞大 · 外圈收缩'
 };
 
 const MATERIAL_NAMES = ['铁锭', '皮革', '硬木', '兽筋', '魔晶', '秘银'];
@@ -205,6 +236,21 @@ const SHOP_QUALITY = {
   2: [['white', 10], ['blue', 40], ['purple', 40], ['gold', 10]],
   3: [['blue', 10], ['purple', 40], ['gold', 40], ['red', 10]]
 };
+
+/* ---------------- 商店材料补给 ---------------- */
+
+// 每次轮间补给开放的基础材料品质（魔晶 / 秘银不售卖）
+const MAT_SUPPLY = {
+  1: ['white', 'blue'],
+  2: ['white', 'blue', 'purple'],
+  3: ['white', 'blue', 'purple']
+};
+
+// 只有这些材料可以从商店买到，魔晶 / 秘银 必须搜刮
+const BASE_MATERIALS = ['铁锭', '皮革', '硬木', '兽筋'];
+
+// 材料单价（必须高于 70% 回收价，避免买入再卖出套利）
+const MAT_PRICE = { white: 2, blue: 4, purple: 6 };
 
 /* ---------------- 工具 ---------------- */
 
