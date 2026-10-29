@@ -3,21 +3,22 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>节点搜打撤 · P1 原型</title>
+<title>掠境 REALMREAVE · P1 原型</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <div id="app">
 
   <header id="topbar">
-    <div class="brand">节点搜打撤 <span class="ver">P1</span></div>
+    <div class="brand">掠境 <span class="en">REALMREAVE</span> <span class="ver">P1</span></div>
     <div id="phaseInfo" class="phase-info"></div>
     <div id="hud" class="hud"></div>
   </header>
 
   <main id="stage">
     <div class="map-wrap">
-      <canvas id="mapCanvas" width="900" height="640"></canvas>
+      <canvas id="mapCanvas" width="1000" height="700"></canvas>
+      <canvas id="mapFxCanvas" width="1000" height="700" aria-hidden="true"></canvas>
     </div>
     <aside id="side" class="side"></aside>
   </main>

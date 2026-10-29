@@ -169,52 +169,8 @@ function runBattle(teamA, teamB) {
   while (round < MAX_ROUND) {
     round++;
     all.forEach(u => { u.guardedThisRound = false; });
-
-    const order = all.filter(u => u.alive)
-      .sort((a, b) => (b.speed - a.speed) || (a.range - b.range));
-
-    for (const unit of order) {
-      if (!unit.alive) continue;
-      const enemies = all.filter(u => u.alive && u.side !== unit.side);
-      if (!enemies.length) break;
-
-      if (unit.stunned > 0) {
-        unit.stunned--;
-        events.push({ t: 'stun', uid: unit.uid });
-        events.push({ t: 'frame', units: snapshotAll(all), round });
-        continue;
-      }
-
-      if (unit.kind === 'hero' && shouldCastSkill(unit, round)) {
-        castSkill(unit, enemies, all, events, round, textLog);
-        events.push({ t: 'frame', units: snapshotAll(all), round });
-        continue;
-      }
-
-      let target = pickTarget(unit, enemies);
-      if (!target) continue;
-
-      if (cheb(unit, target) > unit.range) {
-        let steps = moveRangeOf(unit);
-        while (steps-- > 0 && cheb(unit, target) > unit.range) {
-          const np = stepToward(unit, target, all);
-          if (!np) break;
-          unit.x = np.x; unit.y = np.y;
-          events.push({ t: 'frame', units: snapshotAll(all), round });
-        }
-        target = pickTarget(unit, all.filter(u => u.alive && u.side !== unit.side));
-        if (!target) continue;
-      }
-
-      if (cheb(unit, target) <= unit.range) {
-        doAttack(unit, target, all, events, round, 1, textLog);
-      }
-      events.push({ t: 'frame', units: snapshotAll(all), round });
-    }
-
-    const aAlive = all.some(u => u.alive && u.side === 'A');
-    const bAlive = all.some(u => u.alive && u.side === 'B');
-    if (!aAlive || !bAlive) break;
+    const keepGoing = resolveRound(all, round, events, textLog);
+    if (!keepGoing) break;
   }
 
   const aAlive = all.some(u => u.alive && u.side === 'A');
@@ -250,38 +206,168 @@ function pickTarget(unit, enemies) {
   return nearestEnemy(unit, enemies);
 }
 
-function doAttack(attacker, target, all, events, round, mult, textLog) {
-  let m = mult;
-  const cMod = counterMod(attacker.cls, target.cls);
+/* ---------------- 同时出手结算 ---------------- */
 
+function roundOrder(all) {
+  return all.filter(u => u.alive)
+    .sort((a, b) => (b.speed - a.speed) || (a.range - b.range));
+}
+
+function sideAlive(all, side) {
+  return all.some(u => u.alive && u.side === side);
+}
+
+/**
+ * 一轮结算：全体先移动，再全体同时出手，伤害在本轮末统一生效
+ * @returns {boolean} 双方是否都还有人存活
+ */
+function resolveRound(all, round, events, textLog) {
+  // 1. 定身：本轮无法出手
+  const stunSkip = new Set();
+  for (const u of roundOrder(all)) {
+    if (u.stunned > 0) {
+      u.stunned--;
+      stunSkip.add(u.uid);
+      events.push({ t: 'stun', round, uid: u.uid });
+    }
+  }
+
+  // 2. 移动阶段：逐个移动避免重叠，但不造成伤害
+  for (const u of roundOrder(all)) {
+    if (stunSkip.has(u.uid)) continue;
+    const enemies = all.filter(e => e.alive && e.side !== u.side);
+    if (!enemies.length) break;
+    const target = pickTarget(u, enemies);
+    if (!target) continue;
+    if (cheb(u, target) <= u.range) continue;
+    let steps = moveRangeOf(u);
+    let moved = false;
+    while (steps-- > 0 && cheb(u, target) > u.range) {
+      const np = stepToward(u, target, all);
+      if (!np) break;
+      u.x = np.x; u.y = np.y;
+      moved = true;
+    }
+    if (moved) events.push({ t: 'frame', units: snapshotAll(all), round });
+  }
+
+  // 3. 出手意图：只记录，不扣血
+  const intents = [];
+  for (const u of roundOrder(all)) {
+    if (stunSkip.has(u.uid)) continue;
+    const enemies = all.filter(e => e.alive && e.side !== u.side);
+    if (!enemies.length) break;
+    if (u.kind === 'hero' && shouldCastSkill(u, round)) {
+      intents.push({ unit: u, skill: true, enemies });
+      continue;
+    }
+    const target = pickTarget(u, enemies);
+    if (!target) continue;
+    if (cheb(u, target) <= u.range) intents.push({ unit: u, target });
+  }
+
+  // 4. 伤害计算（骑士减伤在本轮统一取最重的一击）
+  const hits = [];
+  for (const it of intents) {
+    if (it.skill) hits.push(...skillHits(it.unit, it.enemies, events, round, textLog));
+    else hits.push(computeHit(it.unit, it.target, 1));
+  }
+  applyKnightGuard(all, hits);
+
+  // 5. 统一结算：同轮伤害一起生效
+  const dmgMap = new Map();
+  for (const h of hits) dmgMap.set(h.target, (dmgMap.get(h.target) || 0) + h.dmg);
+  for (const [target, dmg] of dmgMap) target.hp -= dmg;
+
+  const died = [];
+  for (const u of all) {
+    if (u.alive && u.hp <= 0) { u.hp = 0; u.alive = false; died.push(u); }
+  }
+  resolveMutualKills(hits, died);
+
+  // 6. 事件：同一轮的攻击一起播放
+  const lastHit = new Map();
+  for (const h of hits) {
+    const prev = lastHit.get(h.target);
+    if (!prev || h.dmg > prev.dmg) lastHit.set(h.target, h);
+  }
+  const ordered = hits.slice().sort((a, b) =>
+    (b.attacker.speed - a.attacker.speed) || (a.attacker.range - b.attacker.range));
+  for (const h of ordered) {
+    events.push({
+      t: 'attack', round, uid: h.attacker.uid, target: h.target.uid, dmg: h.dmg,
+      counter: h.counter, skill: h.skill || null,
+      x: h.target.x, y: h.target.y,
+      died: !h.target.alive && lastHit.get(h.target) === h,
+      simul: true
+    });
+    if (textLog.length < 200) {
+      textLog.push(`${h.attacker.name}${h.counter === 'up' ? '（克制）' : h.counter === 'down' ? '（被克）' : ''} → ${h.target.name} ${h.dmg}`);
+    }
+  }
+  events.push({ t: 'frame', units: snapshotAll(all), round });
+
+  return sideAlive(all, 'A') && sideAlive(all, 'B');
+}
+
+/** 计算一次命中，不修改任何状态 */
+function computeHit(attacker, target, mult) {
+  let m = mult;
   if (attacker.kind === 'hero') {
     if (attacker.heroId === 'warrior' && attacker.firstAttack) { m *= 1.8; attacker.firstAttack = false; }
     if (attacker.heroId === 'assassin' && target.hp / target.maxHp < 0.4) m *= 1.8;
     if (attacker.heroId === 'barbarian' && attacker.hp / attacker.maxHp < 0.5) m *= 1.5;
     if (attacker.heroId === 'archer') m *= 1.5;
   }
+  const cMod = counterMod(attacker.cls, target.cls);
+  return {
+    attacker, target,
+    dmg: damageOf(attacker, target, m),
+    counter: cMod > 1 ? 'up' : cMod < 1 ? 'down' : 'none'
+  };
+}
 
-  let dmg = damageOf(attacker, target, m);
-
-  if (target.kind === 'hero' && target.heroId === 'knight' && !target.guardedThisRound) {
-    dmg = Math.round(dmg * 0.55);
-    target.guardedThisRound = true;
+/** 骑士：每轮只减免一次，作用于本轮承受的最重一击 */
+function applyKnightGuard(all, hits) {
+  for (const k of all) {
+    if (!k.alive || k.kind !== 'hero' || k.heroId !== 'knight' || k.guardedThisRound) continue;
+    const own = hits.filter(h => h.target === k);
+    if (!own.length) continue;
+    own.sort((a, b) => b.dmg - a.dmg);
+    own[0].dmg = Math.round(own[0].dmg * 0.55);
+    k.guardedThisRound = true;
   }
+}
 
-  target.hp -= dmg;
-  let died = false;
-  if (target.hp <= 0) { target.hp = 0; target.alive = false; died = true; }
-
-  events.push({
-    t: 'attack', round, uid: attacker.uid, target: target.uid,
-    dmg, counter: cMod > 1 ? 'up' : cMod < 1 ? 'down' : 'none',
-    x: target.x, y: target.y, died
-  });
-
-  if (textLog.length < 200) {
-    textLog.push(`${attacker.name}${cMod > 1 ? '（克制）' : cMod < 1 ? '（被克）' : ''} → ${target.name} ${dmg}`);
+/** 同归于尽：互相击杀时速度高者以 1 HP 存活 */
+function resolveMutualKills(hits, died) {
+  if (!died.length) return;
+  const killersOf = new Map();
+  for (const h of hits) {
+    const list = killersOf.get(h.target);
+    if (list) list.push(h.attacker);
+    else killersOf.set(h.target, [h.attacker]);
   }
-  if (attacker.heroId === 'warrior') attacker.firstAttack = false;
+  const deadSet = new Set(died);
+  const revived = new Set();
+  const ordered = died.slice().sort((a, b) => (b.speed - a.speed) || (b.atk - a.atk));
+
+  for (const d of ordered) {
+    if (d.alive || revived.has(d.uid)) continue;
+    const killers = (killersOf.get(d) || [])
+      .filter(a => a !== d && deadSet.has(a) && !a.alive && !revived.has(a.uid));
+    if (!killers.length) continue;
+
+    // 速度高者存活；速度相同比攻击力；完全相同则双方阵亡
+    const group = [d].concat(killers)
+      .sort((a, b) => (b.speed - a.speed) || (b.atk - a.atk));
+    const top = group[0], second = group[1];
+    if (!second || (top.speed === second.speed && top.atk === second.atk)) continue;
+
+    top.alive = true;
+    top.hp = 1;
+    revived.add(top.uid);
+  }
 }
 
 function shouldCastSkill(unit, round) {
@@ -290,23 +376,20 @@ function shouldCastSkill(unit, round) {
   return false;
 }
 
-function castSkill(unit, enemies, all, events, round, textLog) {
+/** 技能产生的命中列表（不直接扣血） */
+function skillHits(unit, enemies, events, round, textLog) {
+  const out = [];
   if (unit.heroId === 'dragon') {
     const target = pickTarget(unit, enemies);
-    if (!target) return;
+    if (!target) return out;
     const area = enemies.filter(e => Math.abs(e.x - target.x) <= 1 && Math.abs(e.y - target.y) <= 1);
     for (const e of area) {
-      const dmg = damageOf(unit, e, 1.25);
-      e.hp -= dmg;
-      const died = e.hp <= 0;
-      if (died) { e.hp = 0; e.alive = false; }
-      events.push({
-        t: 'attack', round, uid: unit.uid, target: e.uid, dmg,
-        counter: 'none', skill: '龙息', x: e.x, y: e.y, died
-      });
+      const h = computeHit(unit, e, 1.25);
+      h.skill = '龙息';
+      out.push(h);
     }
     if (textLog.length < 200) textLog.push(`龙族 龙息 → ${area.length} 个目标`);
-    return;
+    return out;
   }
 
   if (unit.heroId === 'elf') {
@@ -314,21 +397,13 @@ function castSkill(unit, enemies, all, events, round, textLog) {
       .sort((a, b) => b.atk - a.atk)[0];
     if (!cand) {
       const t2 = pickTarget(unit, enemies);
-      if (t2 && cheb(unit, t2) <= unit.range) {
-        doAttack(unit, t2, all, events, round, 1, textLog);
-      }
-      return;
+      if (t2 && cheb(unit, t2) <= unit.range) out.push(computeHit(unit, t2, 1));
+      return out;
     }
     cand.stunned = 1;
     events.push({ t: 'skill', round, uid: unit.uid, target: cand.uid, skill: '藤蔓', x: cand.x, y: cand.y });
     if (textLog.length < 200) textLog.push(`精灵 藤蔓 定身 ${cand.name}`);
   }
+  return out;
 }
 
-/** 从战斗中移除阵亡的小兵 */
-function applyBattleResult(player, result, side) {
-  const alive = new Set(
-    result.units.filter(u => u.side === side && u.alive).map(u => u.uid.replace(/[AB]$/, ''))
-  );
-  player.soldiers = player.soldiers.filter(s => alive.has(s.uid));
-}
